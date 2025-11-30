@@ -195,6 +195,100 @@ def faq_answer(text: str, lang: str):
 
     # ========== Arabic branch ==========
     if lang == "ar":
+        # ✅ VIEW ORDER / TRACK ORDER
+        if any(
+            p in t
+            for p in [
+                "اشوف طلبي",
+                "أشوف طلبي",
+                "اشوف الطلب",
+                "أشوف الطلب",
+                "طلباتي",
+                "طلباتى",
+                "اتابع طلبي",
+                "أتتبع طلبي",
+                "تتبع الطلب",
+                "حالة الطلب",
+            ]
+        ):
+            return (
+                "عشان تشوف طلبك وتتابع حالته:\n\n"
+                "1. افتح موقع fabrico.ae\n"
+                "2. اضغط على «تسجيل الدخول برمز OTP»\n"
+                "3. حط رقم جوالك، وادخل رمز التحقق اللي يوصلك برسالة SMS\n"
+                "4. بعد تسجيل الدخول، ادخل على قائمة «طلباتي» My Orders\n"
+                "5. اختر الطلب اللي تبيه\n\n"
+                "بتشوف هناك:\n"
+                "- حالة الطلب خطوة بخطوة\n"
+                "- وقت الاستلام والتسليم المتوقع\n"
+                "- حالة الدفع (مدفوع / غير مدفوع)\n"
+                "- تفاصيل المبلغ والملابس.\n"
+            )
+
+        # ✅ PAYMENT / HOW TO PAY
+        if any(
+            p in t
+            for p in [
+                "كيف ادفع",
+                "كيف أدفع",
+                "طريقة الدفع",
+                "الدفع",
+                "ادفع",
+                "أدفع",
+                "سداد",
+                "فاتورة",
+                "الفاتورة",
+                "اسدد",
+            ]
+        ):
+            return (
+                "عشان تدفع فاتورة الغسيل أونلاين:\n\n"
+                "1. افتح موقع fabrico.ae\n"
+                "2. سجّل دخول برقم جوالك باستخدام «تسجيل الدخول برمز OTP»\n"
+                "3. ادخل على قسم «طلباتي» My Orders\n"
+                "4. اختر الطلب اللي عليه مبلغ مستحق\n"
+                "5. اضغط زر «الدفع» Pay\n"
+                "6. اختر طريقة الدفع المناسبة:\n"
+                "   - بطاقة بنكية (Debit / Credit Card)\n"
+                "   - Apple Pay\n"
+                "   - Google Pay\n"
+                "7. بعد الدفع، تقدر تشوف تأكيد الدفع وتحمل الفاتورة.\n\n"
+                "لو واجهتك أي مشكلة في الدفع، تقدر تتواصل معنا على الواتساب 056 211 1334. 😊"
+            )
+
+        # ✅ OTP LOGIN / ACCOUNT / TRACK (generic)
+        if any(
+            p in t
+            for p in [
+                "تسجيل الدخول",
+                "تسجيل دخول",
+                "كيف ادخل",
+                "كيف أسجل",
+                "الدخول",
+                "otp",
+                "رمز",
+                "رمز تحقق",
+                "رمز التحقق",
+                "دخول بالحساب",
+                "حسابي",
+            ]
+        ):
+            return (
+                "طريقة تسجيل الدخول باستخدام رمز OTP سهلة جداً!\n\n"
+                "1. افتح موقع fabrico.ae\n"
+                "2. اضغط على خيار «تسجيل الدخول برمز OTP»\n"
+                "3. اكتب رقم جوالك\n"
+                "4. بيصلك رمز تحقق مكوّن من 6 أرقام في رسالة SMS\n"
+                "5. أدخل الرمز وبيتم تسجيل دخولك فوراً\n\n"
+                "بعدها تقدر:\n"
+                "- تشوف كل طلباتك السابقة والجديدة\n"
+                "- تتابع حالة الطلب خطوة بخطوة\n"
+                "- تعرف حالة الدفع\n"
+                "- تدفع بالبطاقة أو Apple Pay أو Google Pay\n"
+                "- تحمّل الفاتورة والإيصال\n\n"
+                "ما تحتاج كلمة سر — فقط رمز OTP السريع. 😊"
+            )
+
         # Services
         if any(p in t for p in ["ما هي خدماتكم", "ايش الخدمات", "شو الخدمات", "ما الخدمات", "وش تقدمون"]):
             return (
@@ -284,6 +378,97 @@ def faq_answer(text: str, lang: str):
         return None
 
     # ========== English branch ==========
+
+    # ✅ VIEW ORDER / TRACK ORDER
+    if any(
+        p in t
+        for p in [
+            "view my order",
+            "see my order",
+            "view order",
+            "see order",
+            "my orders",
+            "order history",
+            "track my order",
+            "track order",
+            "order status",
+        ]
+    ):
+        return (
+            "To view and track your order:\n\n"
+            "1. Go to fabrico.ae\n"
+            "2. Tap 'Login with OTP'\n"
+            "3. Enter your mobile number and the 6-digit OTP you receive by SMS\n"
+            "4. Once logged in, open the 'My Orders' section\n"
+            "5. Select the order you want to see\n\n"
+            "There you can view:\n"
+            "- The full status timeline\n"
+            "- Pickup and delivery details\n"
+            "- Payment status (paid / unpaid)\n"
+            "- The bill and garment details.\n"
+        )
+
+    # ✅ PAYMENT / HOW TO PAY
+    if any(
+        p in t
+        for p in [
+            "how to pay",
+            "pay my order",
+            "make payment",
+            "payment",
+            "pay now",
+            "pay bill",
+            "pay invoice",
+            "settle bill",
+            "settle my bill",
+        ]
+    ):
+        return (
+            "To pay for your laundry order online:\n\n"
+            "1. Go to fabrico.ae\n"
+            "2. Log in using 'Login with OTP' (mobile number + 6-digit OTP)\n"
+            "3. Open the 'My Orders' section\n"
+            "4. Select the order that has an outstanding amount\n"
+            "5. Tap the 'Pay' button\n"
+            "6. Choose your payment method:\n"
+            "   - Card (debit / credit)\n"
+            "   - Apple Pay\n"
+            "   - Google Pay\n"
+            "7. After payment, you will see confirmation and can download your receipt.\n\n"
+            "If you face any issue with payment, you can also WhatsApp us on 056 211 1334. 😊"
+        )
+
+    # ✅ OTP LOGIN / ACCOUNT / TRACK (generic)
+    if any(
+        p in t
+        for p in [
+            "login",
+            "log in",
+            "login with otp",
+            "otp login",
+            "how to login",
+            "how to log in",
+            "sign in",
+            "sign-in",
+            "my account",
+            "account",
+        ]
+    ):
+        return (
+            "It's very simple to log in using OTP on Fresh Touch Laundry:\n\n"
+            "1. Go to fabrico.ae\n"
+            "2. Tap 'Login with OTP'\n"
+            "3. Enter your mobile number\n"
+            "4. You will receive a 6-digit OTP by SMS\n"
+            "5. Enter the OTP to log in instantly\n\n"
+            "Once logged in, you can:\n"
+            "- View all your orders\n"
+            "- Track order progress step-by-step\n"
+            "- Check payment status\n"
+            "- Pay using card, Apple Pay or Google Pay\n"
+            "- Download your receipts\n\n"
+            "No password is needed — just quick OTP login. 😊"
+        )
 
     # Services
     if any(p in t for p in ["services do you offer", "what services", "what do you offer"]):
@@ -430,6 +615,6 @@ def answer(user_text: str) -> str:
     else:
         return (
             "I’m mainly trained to help with laundry topics – prices, pickup, offers, "
-            "and how to place an order on fabrico.ae.\n"
-            "Please ask me about your laundry, items, prices or pickup and I’ll do my best to help. 😊"
+            "and how to place an order or pay for your order on fabrico.ae.\n"
+            "Please ask me about your laundry, items, prices, orders or pickup and I’ll do my best to help. 😊"
         )

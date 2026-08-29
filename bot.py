@@ -1,10 +1,6 @@
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import torch
 import requests
 
 # ---------------- BASIC CONFIG ----------------
-
-MODEL_NAME = "microsoft/DialoGPT-medium"
 
 # 👉 This is the price API you provided
 PRICING_API_URL = "https://doobi.ae/packages"
@@ -538,118 +534,42 @@ def faq_answer(user_text: str, lang: str):
     return None  # no FAQ hit
 
 
-# ---------------- MODEL WRAPPERS ----------------
+# ---------------- FALLBACK REPLY ----------------
+# Previously this ran microsoft/DialoGPT-medium (a generic, un-fine-tuned
+# 2019 chit-chat model — the business context was just prepended as prompt
+# text, no real instruction-following) as a last-resort fallback for
+# anything handle_small_talk_and_meta()/faq_answer() didn't already cover.
+# Loading it ate 1.4GB+ RAM at startup before the server even opened its
+# port, which is what was causing Render's "Out of memory (used over
+# 512Mi)" crash — the free tier simply doesn't have that much RAM. Given
+# steps 0/1 already handle the realistic query space for this business, and
+# the model's own quality bar for anything reaching this fallback was
+# doubtful anyway, this now always returns the same well-formed bilingual
+# message the code already used whenever the model produced empty/garbage
+# output — so the typical-case reply quality here is unchanged, just
+# without ever loading a model to get there.
 
-def load_model():
-    print("Loading model... This may take some time on first run...")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
-    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
-    model.eval()
-
-    print("✅ Model loaded. Fresh Touch Laundry bot (Jabir) is ready!\n")
-    return tokenizer, model
-
-
-def generate_reply(tokenizer, model, history_text: str, user_text: str, lang: str):
+def generate_reply(history_text: str, user_text: str, lang: str):
     """
     history_text: string with previous conversation
     user_text: latest user message
     lang: 'en' or 'ar'
     returns: (new_history_text, bot_reply)
-
-    Strategy:
-    - Truncate history by characters.
-    - Tokenize with truncation to 896 tokens (reserve space for reply).
-    - Use ONLY max_new_tokens (no max_length) so we stay below 1024
-      and avoid HuggingFace warnings/errors.
     """
-
     if lang == "ar":
-        lang_instruction = (
-            "IMPORTANT: The user is writing in Arabic. "
-            "Answer ONLY in Arabic, with a friendly and clear tone. "
-            "Keep the answer short and easy to read."
+        bot_reply = (
+            "يمكن ما فهمت سؤالك بالضبط، آسف على ذلك.\n"
+            "أنا متخصص في مساعدةك في أمور الغسيل، الأسعار، العروض وخدمة الاستلام والتوصيل.\n"
+            "حاول تكتب سؤالك مرة ثانية عن شيء يخص الغسيل أو الأسعار وأنا أجاوبك بأوضح شكل ممكن. 🌸"
         )
     else:
-        lang_instruction = (
-            "IMPORTANT: The user is writing in English. "
-            "Answer ONLY in English, with a friendly and clear tone. "
-            "Keep the answer short and easy to read."
+        bot_reply = (
+            "I might not have understood your question correctly, sorry about that.\n"
+            "I’m mainly here to help with laundry questions – like prices, pickup, offers, "
+            "or how to place an order on fabrico.ae.\n"
+            "Please ask again about anything related to your laundry and I’ll do my best to answer clearly. 😊"
         )
 
-    # 🔹 1) Soft truncate history by characters (keep only latest ~2000 chars)
-    MAX_HISTORY_CHARS = 2000
-    if len(history_text) > MAX_HISTORY_CHARS:
-        history_text_trimmed = history_text[-MAX_HISTORY_CHARS:]
-    else:
-        history_text_trimmed = history_text
-
-    # Build a prompt in dialogue style
-    prompt = (
-        BUSINESS_CONTEXT.strip()
-        + "\n\n"
-        + lang_instruction
-        + "\n\n"
-        + history_text_trimmed.strip()
-        + f"\nUser: {user_text}\nJabir:"
-    ).strip()
-
-    # 🔹 2) Tokenize with truncation for the input
-    # We limit to 896 so we always have room for up to ~128 new tokens
-    encoded = tokenizer(
-        prompt,
-        return_tensors="pt",
-        truncation=True,
-        max_length=896,
-    )
-
-    input_len = encoded["input_ids"].shape[1]
-    MAX_TOTAL_TOKENS = 1024
-
-    # How many tokens can we safely generate?
-    max_possible_new = MAX_TOTAL_TOKENS - input_len
-    # Try to generate up to 128, but cap at what's possible and ensure >= 16
-    available_for_gen = min(128, max_possible_new)
-    if available_for_gen < 16:
-        available_for_gen = max(1, max_possible_new)
-
-    output_ids = model.generate(
-        **encoded,
-        max_new_tokens=available_for_gen,
-        pad_token_id=tokenizer.eos_token_id,
-        do_sample=True,
-        top_p=0.95,
-        top_k=50,
-        temperature=0.7,
-    )
-
-    full_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
-
-    # Extract only what Jabir said after the last "Jabir:" tag
-    last_tag = full_text.rfind("Jabir:")
-    if last_tag != -1:
-        bot_reply = full_text[last_tag + len("Jabir:"):].strip()
-    else:
-        # fallback: take the tail of the text
-        bot_reply = full_text[len(prompt):].strip()
-
-    # If model gives nothing or garbage → graceful, context-aware fallback
-    if not bot_reply or len(bot_reply) < 2:
-        if lang == "ar":
-            bot_reply = (
-                "يمكن ما فهمت سؤالك بالضبط، آسف على ذلك.\n"
-                "أنا متخصص في مساعدةك في أمور الغسيل، الأسعار، العروض وخدمة الاستلام والتوصيل.\n"
-                "حاول تكتب سؤالك مرة ثانية عن شيء يخص الغسيل أو الأسعار وأنا أجاوبك بأوضح شكل ممكن. 🌸"
-            )
-        else:
-            bot_reply = (
-                "I might not have understood your question correctly, sorry about that.\n"
-                "I’m mainly here to help with laundry questions – like prices, pickup, offers, "
-                "or how to place an order on fabrico.ae.\n"
-                "Please ask again about anything related to your laundry and I’ll do my best to answer clearly. 😊"
-            )
-
-    # We still store full history (text may get trimmed next time again)
     new_history = (history_text + f"\nUser: {user_text}\nJabir: {bot_reply}").strip()
     return new_history, bot_reply
 
@@ -657,8 +577,6 @@ def generate_reply(tokenizer, model, history_text: str, user_text: str, lang: st
 # ---------------- MAIN CHAT LOOP ----------------
 
 def main():
-    tokenizer, model = load_model()
-
     # history as plain text (for multiple turns)
     history_text = ""
 
@@ -699,8 +617,8 @@ def main():
             print()
             continue
 
-        # 2) Otherwise, use the model (with language hint)
-        history_text, bot_reply = generate_reply(tokenizer, model, history_text, user_text, lang)
+        # 2) Otherwise, fall back to the canned reply
+        history_text, bot_reply = generate_reply(history_text, user_text, lang)
         print("Bot:", bot_reply)
         print()
 

@@ -5,7 +5,6 @@ from pydantic import BaseModel
 from typing import Dict
 
 from bot import (
-    load_model,
     detect_language,
     handle_small_talk_and_meta,
     faq_answer,
@@ -33,9 +32,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Load model once on startup
-tokenizer, model = load_model()
 
 # 🔹 Per-session histories (simple in-memory dict)
 # key: session_id, value: history_text string
@@ -82,10 +78,8 @@ def chat(req: ChatRequest):
         histories[session_id] = history_text
         return ChatResponse(reply=faq)
 
-    # 2) Model reply
-    history_text, bot_reply = generate_reply(
-        tokenizer, model, history_text, user_text, lang
-    )
+    # 2) Fallback reply
+    history_text, bot_reply = generate_reply(history_text, user_text, lang)
     histories[session_id] = history_text
 
     return ChatResponse(reply=bot_reply)

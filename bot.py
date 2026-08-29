@@ -1,17 +1,79 @@
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import torch
 import requests
 
+# ---------------- BASIC CONFIG ----------------
+
+MODEL_NAME = "microsoft/DialoGPT-medium"
+
+# 👉 This is the price API you provided
 PRICING_API_URL = "https://doobi.ae/packages"
 
 
+# ---------------- BUSINESS CONTEXT ----------------
+
+BUSINESS_CONTEXT = """
+You are Jabir, the friendly AI assistant for Fresh Touch Laundry & Dry Cleaning (UAE).
+
+Identity:
+- Your name is Jabir.
+- You are a helpful virtual assistant (not a human), but you speak in a friendly, human-like way.
+- You always stay polite and respectful.
+
+Business & services:
+- You help users with laundry, dry cleaning, ironing, curtains, carpets, abayas, kanduras, dresses,
+  blankets, duvets, shoe cleaning, uniforms, and more.
+- You explain that customers can easily create an order by visiting fabrico.ae and using the
+  Quick Order / Schedule Now option.
+- You mention that after placing an order, our rider will contact the customer before the pickup time
+  to reconfirm the details.
+- You clearly mention that for the first 3 orders in a month, we offer 20% off
+  (subject to current offer validity).
+
+What makes Fresh Touch different:
+- We offer special Arabic bakhoor steam finishing for selected garments.
+- We provide premium sandalwood wash options.
+- We offer rose and jasmine wash for a gentle, fresh fragrance.
+- We focus on high quality, careful fabric handling, and very affordable pricing.
+- We provide free pickup and drop in our covered areas.
+- We use gentle detergents and premium cleaning techniques.
+
+Answer style:
+- You answer clearly and briefly, in a friendly and professional tone.
+- You avoid very long paragraphs and keep answers easy to read.
+- When asked about prices, you use the latest prices from the connected price API when available.
+- When users ask about booking, you remind them they can place a Quick Order on fabrico.ae and that
+  our rider will contact them before pickup.
+- If something is not clear or you are not fully sure, you say you are not sure and suggest the user
+  check fabrico.ae or contact support/WhatsApp for confirmation.
+"""
+
+
+# ---------------- LANGUAGE DETECTION ----------------
+
 def detect_language(text: str) -> str:
-    """Very simple language detector: Arabic if contains Arabic chars, else English."""
-    if any("\u0600" <= ch <= "\u06FF" for ch in text):
+    """
+    Very simple language detector:
+    - If it contains Arabic characters, return 'ar'
+    - Otherwise default to 'en'
+    """
+    if any('\u0600' <= ch <= '\u06FF' for ch in text):
         return "ar"
     return "en"
 
 
+# ---------------- PRICE FETCHING ----------------
+
 def get_prices_from_site():
-    """Fetch and normalize prices from API. Returns dict: name_lower -> description string."""
+    """
+    Calls https://doobi.ae/packages (JSON) and normalizes into dict:
+    {
+      "kandoora": "from 7 AED | Dry Clean: 10 aed, Steam: 5 aed, Wash and press: 8 aed",
+      "abaya":   "from 15 AED | Dry Clean: 15 aed, Steam: 8 aed, Wash and press: 12 aed",
+      ...
+    }
+    """
+
     try:
         resp = requests.get(PRICING_API_URL, timeout=10)
         resp.raise_for_status()
@@ -31,25 +93,29 @@ def get_prices_from_site():
         return None
 
     prices = {}
+
     for pkg in packages:
         name = str(pkg.get("name", "")).strip()
         if not name:
             continue
-        key = name.lower()
 
+        key = name.lower()
         base_price = pkg.get("price")  # numeric base price
         itemtype_list = pkg.get("itemtype", [])
 
+        # Build variants like: "Dry Clean: 10 aed, Steam: 5 aed, Wash and press: 8 aed"
         variants = []
         if isinstance(itemtype_list, list):
-            for v in itemtype_list:
-                if isinstance(v, dict):
-                    for vname, vprice in v.items():
+            for variant in itemtype_list:
+                if isinstance(variant, dict):
+                    for vname, vprice in variant.items():
                         variants.append(f"{vname}: {vprice}")
 
         parts = []
+
         if base_price is not None:
             parts.append(f"from {base_price} AED")
+
         if variants:
             parts.append(", ".join(variants))
 
@@ -59,282 +125,222 @@ def get_prices_from_site():
         prices[key] = " | ".join(parts)
 
     if not prices:
-        print("⚠️ No prices parsed from API.")
-        return None
-
-    return prices
+        print("⚠️ No prices found after parsing.")
+    return prices or None
 
 
-def handle_small_talk_and_meta(text: str, lang: str):
-    """Greetings, thanks, compliments, identity questions."""
-    t = text.strip().lower()
+# ---------------- SMALL TALK / META INTENT ----------------
+
+def handle_small_talk_and_meta(user_text: str, lang: str):
+    """
+    Handles greetings, "what is your name", "who are you", compliments, thanks, etc.
+    Returns a reply string or None.
+    """
+    text = user_text.lower().strip()
 
     if lang == "ar":
+        # Pure greetings in Arabic
         arabic_greetings = [
-            "مرحبا",
-            "أهلا",
-            "اهلا",
-            "السلام عليكم",
-            "هلا",
-            "مرحبا جابر",
-            "اهلا جابر",
+            "مرحبا", "اهلا", "أهلا", "السلام عليكم", "هلا", "مرحبا جابر", "اهلا جابر"
         ]
-        if t in arabic_greetings:
-            return "أهلاً! أنا جابر من مغسلة فريش تاتش. كيف أقدر أساعدك اليوم؟"
+        if text in arabic_greetings:
+            return "أهلاً! أنا جابر، المساعد الافتراضي من مغسلة فريش تاتش. كيف أقدر أساعدك اليوم؟"
 
-        if any(p in t for p in ["شكرا", "شكرًا", "مشكور", "يعطيك العافية"]):
-            return "العفو 🌸، إذا تحتاج أي مساعدة في الغسيل أو الأسعار أو الاستلام والتوصيل أنا حاضر."
+        # Thanks
+        if any(p in text for p in ["شكرا", "شكرًا", "مشكور", "يعطيك العافية"]):
+            return "العفو 🌸، هذا واجبي. إذا تحتاج أي مساعدة في الغسيل أو الأسعار أو الاستلام والتوصيل أنا حاضر."
 
-        if any(p in t for p in ["انت رائع", "أنت رائع", "انت لطيف", "أنت لطيف", "كويس", "حلو", "جيد"]):
-            return "تسلم 🧡، شكراً على الكلام الطيب. كيف أقدر أساعدك في الغسيل أو الأسعار؟"
+        # Compliments
+        if any(p in text for p in ["انت رائع", "أنت رائع", "انت لطيف", "أنت لطيف", "كويس", "حلو", "جيد"]):
+            return "تسلم 🧡، شكراً لك على الكلام الطيب. كيف أقدر أساعدك في الغسيل أو الأسعار؟"
 
-        if any(p in t for p in ["اسمك", "مين انت", "من انت", "هل انت روبوت", "هل انت انسان"]):
+        # Name / identity in Arabic
+        if any(p in text for p in ["اسمك", "مين انت", "من انت", "هل انت روبوت", "هل انت انسان"]):
             return (
                 "أنا جابر، المساعد الافتراضي لمغسلة فريش تاتش للغسيل والتنظيف الجاف. "
-                "أقدر أساعدك في الأسعار، الخدمات، العروض، وحجز استلام الغسيل من البيت."
+                "أساعدك في الأسعار، والخدمات، والعروض، وحجز استلام الغسيل من البيت."
             )
 
-        if any(p in t for p in ["ماذا تستطيع", "شو تسوي", "كيف تساعدني", "ايش تسوي", "ماذا تفعل"]):
+        # "What can you do?" in Arabic
+        if any(p in text for p in ["ماذا تستطيع", "شو تسوي", "كيف تساعدني", "ايش تسوي", "ماذا تفعل"]):
             return (
                 "أقدر أساعدك في معرفة أسعار الغسيل والتنظيف الجاف، وخدمات مثل البخور، "
-                "غسيل بالصندل وروائح الورد والياسمين، وأشرح لك طريقة حجز طلب سريع من خلال موقع fabrico.ae."
+                "غسيل بالصندل، وروائح الورد والياسمين، وأشرح لك كيف تحجز طلب سريع من خلال موقع fabrico.ae. "
+                "تقدر تسأل عن الاستلام والتوصيل أو أي قطعة ملابس تحتاج سعرها."
             )
 
-    # English small talk
-    greetings = ["hi", "hello", "hey", "salam", "ahlan", "hi jabir", "hello jabir", "hey jabir"]
-    if t in greetings:
-        return "Ahlan! I'm Jabir from Fresh Touch Laundry. How can I assist you today?"
+    # ENGLISH branch (default)
+    # Pure greetings
+    greeting_patterns = {
+        ("hi", "hello", "hey", "salam", "ahlan", "hi jabir", "hello jabir", "hey jabir"):
+        "Ahlan! I'm Jabir from Fresh Touch Laundry. How can I assist you today?"
+    }
 
-    if any(p in t for p in ["thanks", "thank you", "thx", "tnx"]):
-        return "You’re most welcome! 😊 If you need help with laundry, prices, pickup or offers, just ask me."
+    for patterns, reply in greeting_patterns.items():
+        if text in patterns:
+            return reply
 
-    if any(
-        p in t
-        for p in [
-            "you are nice",
-            "you're nice",
-            "you are cool",
-            "you're cool",
-            "you are great",
-            "you're great",
-            "you are good",
-            "you're good",
-            "love you",
-            "i like you",
-        ]
-    ):
-        return "Thank you, that’s very kind of you 🧡 I’m here anytime you need help with laundry, prices, pickup or offers."
+    # Thanks
+    if any(p in text for p in ["thanks", "thank you", "thx", "tnx"]):
+        return (
+            "You’re most welcome! 😊\n"
+            "If you need help with laundry, prices, pickup or offers, just ask me."
+        )
 
-    if any(p in t for p in ["your name", "who are you", "what are you", "are you a bot", "are you human"]):
+    # Compliments
+    if any(p in text for p in [
+        "you are nice", "you're nice", "you are cool", "you're cool",
+        "you are great", "you're great", "you are good", "you're good",
+        "love you", "i like you"
+    ]):
+        return (
+            "Thank you, that’s very kind of you 🧡\n"
+            "I’m here anytime you need help with laundry, prices, pickup or offers."
+        )
+
+    # Questions about name / identity
+    if any(p in text for p in ["your name", "who are you", "what are you", "are you a bot", "are you human"]):
         return (
             "I’m Jabir, the virtual assistant for Fresh Touch Laundry & Dry Cleaning. "
             "I’m here to help with prices, services, offers and booking your laundry pickup."
         )
 
-    if any(p in t for p in ["what can you do", "how can you help", "what do you do"]):
+    # “What do you do?” / “How can you help?”
+    if any(p in text for p in ["what can you do", "how can you help", "what do you do"]):
         return (
             "I can help you with laundry prices, services, special washes like bakhoor steam, "
-            "sandalwood, rose and jasmine, and explain how to place a quick order on fabrico.ae."
+            "sandalwood, rose and jasmine, and explain how to place a quick order on fabrico.ae. "
+            "You can ask me about pickup, offers, or any item price."
         )
 
     return None
 
 
-def faq_answer(text: str, lang: str):
-    """Main FAQ / business logic, bilingual."""
-    t = text.strip().lower()
+# ---------------- FAQ / BUSINESS INTENT (BILINGUAL) ----------------
 
-    # Complaints: "not answering", "very slow"
-    if lang == "ar":
-        if any(p in t for p in ["ما تجاوب", "ما ترد", "بطيء", "بطيئ", "بطئ"]):
-            return (
-                "آسف إذا حسّيت أني ما جاوبتك صح أو أن الرد كان بطيء.\n"
-                "حاول تكتب سؤالك مرة ثانية عن الغسيل أو الأسعار أو التوصيل، وأنا أجاوبك بأوضح شكل ممكن. 🌸"
-            )
-    else:
-        if any(p in t for p in ["not answering", "not ansering", "answer my question", "very slow", "too slow"]):
-            return (
-                "Sorry if it felt like I wasn’t answering you properly or was a bit slow.\n"
-                "Please ask again about laundry, prices, pickup or offers and I’ll try to answer more clearly. 😊"
-            )
+def faq_answer(user_text: str, lang: str):
+    original_text = user_text
+    text = user_text.lower().strip()
 
-    # Common items for price detection
+    # Common items you care about for prices
     common_items = [
-        "abaya",
-        "shela",
-        "sheila",
-        "jalabiya",
-        "kandoora",
-        "kandura",
-        "thobe",
-        "dress",
-        "blanket",
-        "duvet",
-        "curtain",
-        "curtains",
-        "carpet",
-        "t-shirt",
-        "shirt",
-        "trouser",
-        "pants",
-        "jeans",
-        "bedsheet",
-        "bed sheet",
-        "bedcover",
-        "bed cover",
-        "apron",
-        "cap",
-        "lungi",
-        "wizar",
-        "wizaar",
+        "abaya", "shela", "sheila", "jalabiya",
+        "kandoora", "kandura", "thobe",
+        "dress", "blanket", "duvet",
+        "curtain", "curtains", "carpet",
+        "t-shirt", "shirt", "trouser", "pants", "jeans",
+        "saree", "night gown", "children", "kids clothes",
+        "shoes", "shoe",
+        "bedsheet", "bed sheet", "bedcover", "bed cover", "bed-sheet",
+        # extra items you mentioned / might exist in API
+        "apron", "cap", "lungi", "vizar", "wizaar", "wizar"
     ]
 
-    # If user wrote just "abaya" → treat as price query
-    if t in common_items:
-        t = "price " + t
+    # If user writes only an item name like "blanket" or "abaya",
+    # treat it as a price query
+    if text in common_items:
+        text = f"price {text}"
 
-    # ========== Arabic branch ==========
+    # ---------------- COMPLAINTS / META FEEDBACK (BOTH LANGS) ----------------
+    complaint_en = ["not answering", "not ansering", "not answer", "answer my question",
+                    "answer my questions", "very slow", "too slow", "so slow"]
+    complaint_ar = ["ما تجاوب", "ما ترد", "مو راضي ترد", "بطيء", "بطيئ", "بطئ"]
+
     if lang == "ar":
-        # ✅ VIEW ORDER / TRACK ORDER
-        if any(
-            p in t
-            for p in [
-                "اشوف طلبي",
-                "أشوف طلبي",
-                "اشوف الطلب",
-                "أشوف الطلب",
-                "طلباتي",
-                "طلباتى",
-                "اتابع طلبي",
-                "أتتبع طلبي",
-                "تتبع الطلب",
-                "حالة الطلب",
-            ]
-        ):
+        if any(w in text for w in complaint_ar):
             return (
-                "عشان تشوف طلبك وتتابع حالته:\n\n"
-                "1. افتح موقع fabrico.ae\n"
-                "2. اضغط على «تسجيل الدخول برمز OTP»\n"
-                "3. حط رقم جوالك، وادخل رمز التحقق اللي يوصلك برسالة SMS\n"
-                "4. بعد تسجيل الدخول، ادخل على قائمة «طلباتي» My Orders\n"
-                "5. اختر الطلب اللي تبيه\n\n"
-                "بتشوف هناك:\n"
-                "- حالة الطلب خطوة بخطوة\n"
-                "- وقت الاستلام والتسليم المتوقع\n"
-                "- حالة الدفع (مدفوع / غير مدفوع)\n"
-                "- تفاصيل المبلغ والملابس.\n"
+                "آسف إذا حسّيت أني ما جاوبتك صح أو أن الرد كان بطيء.\n"
+                "حاول تكتب سؤالك مرة ثانية عن الغسيل أو الأسعار أو التوصيل، "
+                "وأنا أجاوبك بأوضح شكل ممكن. 🌸"
+            )
+    else:
+        if any(w in text for w in complaint_en):
+            return (
+                "Sorry if it felt like I wasn’t answering you properly or was a bit slow.\n"
+                "Please ask your question again about laundry, prices, pickup or offers, "
+                "and I’ll try to answer more clearly. 😊"
             )
 
-        # ✅ PAYMENT / HOW TO PAY
-        if any(
-            p in t
-            for p in [
-                "كيف ادفع",
-                "كيف أدفع",
-                "طريقة الدفع",
-                "الدفع",
-                "ادفع",
-                "أدفع",
-                "سداد",
-                "فاتورة",
-                "الفاتورة",
-                "اسدد",
-            ]
-        ):
-            return (
-                "عشان تدفع فاتورة الغسيل أونلاين:\n\n"
-                "1. افتح موقع fabrico.ae\n"
-                "2. سجّل دخول برقم جوالك باستخدام «تسجيل الدخول برمز OTP»\n"
-                "3. ادخل على قسم «طلباتي» My Orders\n"
-                "4. اختر الطلب اللي عليه مبلغ مستحق\n"
-                "5. اضغط زر «الدفع» Pay\n"
-                "6. اختر طريقة الدفع المناسبة:\n"
-                "   - بطاقة بنكية (Debit / Credit Card)\n"
-                "   - Apple Pay\n"
-                "   - Google Pay\n"
-                "7. بعد الدفع، تقدر تشوف تأكيد الدفع وتحمل الفاتورة.\n\n"
-                "لو واجهتك أي مشكلة في الدفع، تقدر تتواصل معنا على الواتساب 056 211 1334. 😊"
-            )
-
-        # ✅ OTP LOGIN / ACCOUNT / TRACK (generic)
-        if any(
-            p in t
-            for p in [
-                "تسجيل الدخول",
-                "تسجيل دخول",
-                "كيف ادخل",
-                "كيف أسجل",
-                "الدخول",
-                "otp",
-                "رمز",
-                "رمز تحقق",
-                "رمز التحقق",
-                "دخول بالحساب",
-                "حسابي",
-            ]
-        ):
-            return (
-                "طريقة تسجيل الدخول باستخدام رمز OTP سهلة جداً!\n\n"
-                "1. افتح موقع fabrico.ae\n"
-                "2. اضغط على خيار «تسجيل الدخول برمز OTP»\n"
-                "3. اكتب رقم جوالك\n"
-                "4. بيصلك رمز تحقق مكوّن من 6 أرقام في رسالة SMS\n"
-                "5. أدخل الرمز وبيتم تسجيل دخولك فوراً\n\n"
-                "بعدها تقدر:\n"
-                "- تشوف كل طلباتك السابقة والجديدة\n"
-                "- تتابع حالة الطلب خطوة بخطوة\n"
-                "- تعرف حالة الدفع\n"
-                "- تدفع بالبطاقة أو Apple Pay أو Google Pay\n"
-                "- تحمّل الفاتورة والإيصال\n\n"
-                "ما تحتاج كلمة سر — فقط رمز OTP السريع. 😊"
-            )
-
+    # ---------------- ARABIC ANSWERS ----------------
+    if lang == "ar":
         # Services
-        if any(p in t for p in ["ما هي خدماتكم", "ايش الخدمات", "شو الخدمات", "ما الخدمات", "وش تقدمون"]):
+        if any(w in text for w in ["ما هي خدماتكم", "ايش الخدمات", "شو الخدمات", "ما الخدمات", "وش تقدمون"]):
             return (
-                "نقدم غسيل، تنظيف جاف، كي، عبايات، كنادير، فساتين، بدلات، ملابس أطفال، "
-                "ستائر، سجاد، لحف، بطانيات، مناشف ومفارش سرير وأكثر.\n"
-                "تقدر تحجز طلب سريع عن طريق موقع fabrico.ae، ومندوبنا يتواصل معك قبل الاستلام للتأكيد."
+                "نقدم خدمات غسيل، تنظيف جاف، كي، غسيل عبايات، كنادير، فساتين، بدلات، ملابس أطفال، "
+                "ستائر، سجاد، لحف، بطانيات، مناشف، ومفارش سرير وأكثر.\n"
+                "تقدر تحجز طلب سريع من خلال موقع fabrico.ae، ومندوبنا يتواصل معك قبل وقت الاستلام للتأكيد."
             )
 
-        # Offers / discount
-        if any(p in t for p in ["عرض", "العرض", "العروض", "خصم", "تخفيض"]):
+        # What makes you different
+        if any(w in text for w in ["ما الذي يميزكم", "ليش انتم مختلفين", "ليش اختاركم", "ما المميز", "ايش المميز"]):
+            return (
+                "مغسلة فريش تاتش تهتم بجودة الغسيل وراحة العميل:\n"
+                "- بخور عربي بالبخار لقطع مختارة\n"
+                "- غسيل بالصندل (سندل وود) مع رائحة مميزة\n"
+                "- غسيل بروائح الورد والياسمين لانتعاش ناعم\n"
+                "- عناية خاصة بالأقمشة مع منظفات لطيفة\n"
+                "- استلام وتوصيل مجاني في المناطق المشمولة\n"
+                "- خصم 20% على أول 3 طلبات في الشهر (حسب توفر العرض)\n"
+                "وتقدر تحجز بسهولة طلبك من خلال موقع fabrico.ae."
+            )
+
+        # Fragrance / bakhoor
+        if any(w in text for w in ["بخور", "بخور عربي", "صندل", "ورد", "ياسمين", "رائحة", "عطر", "ريحة"]):
+            return (
+                "نقدم خيارات روائح خاصة لقطع مختارة:\n"
+                "- بخور عربي بالبخار\n"
+                "- غسيل بالصندل (سندل وود)\n"
+                "- غسيل بروائح الورد والياسمين\n"
+                "تقدر تطلب نوع الرائحة المفضل عند إنشاء الطلب حتى نهتم بملابسك بالطريقة اللي تحبها."
+            )
+
+        # Offers / discounts in Arabic
+        if any(w in text for w in ["عرض", "العرض", "العروض", "خصم", "تخفيض", "off", "اوف"]):
             return (
                 "حالياً نقدم خصم 20% على أول 3 طلبات في الشهر (حسب توفر العرض).\n"
-                "الخصم يطبق على قيمة الغسيل عند الدفع، سواء بالبطاقة أو Apple Pay أو Google Pay."
+                "الخصم يطبق على قيمة الغسيل عند الدفع، سواء عن طريق البطاقة أو Apple Pay أو Google Pay.\n"
+                "لمعرفة أي عروض إضافية مفعّلة الآن، يُفضل تشيك موقع fabrico.ae أو تراسلنا على الواتساب."
             )
 
-        # WhatsApp / contact
-        if any(p in t for p in ["واتساب", "الواتساب", "رقمك", "رقمكم", "رقم الهاتف", "رقم الجوال", "اتصال"]):
-            return "تقدر تتواصل معنا على الواتساب أو الاتصال على: 📞 056 211 1334"
+        # WhatsApp / contact number (Arabic)
+        if any(w in text for w in ["واتساب", "الواتساب", "رقمك", "رقمكم", "رقم الهاتف", "رقم الجوال", "اتصال", "اتصل"]):
+            return (
+                "تقدر تتواصل معنا على الواتساب أو الاتصال على هذا الرقم:\n"
+                "📞 056 211 1334"
+            )
 
-        # Area coverage
-        if any(p in t for p in ["منطقتي", "في منطقتي", "تخدمون منطقتي", "تخدمون في منطقتي"]):
+        # Area coverage / service in my area (Arabic)
+        if any(w in text for w in ["منطقتي", "منطقه", "في منطقتي", "في منطقتك", "تخدمون منطقتي", "تخدمون في منطقتي"]):
             return (
                 "نخدم عدة مناطق داخل دولة الإمارات مع استلام وتوصيل مجاني في المناطق المشمولة.\n"
-                "الأفضل ترسل موقعك أو منطقتك على الواتساب 056 211 1334 عشان نأكد لك الخدمة."
+                "عشان أقدر أأكد لك بالضبط، يفضّل ترسل موقعك (لوكيشن) أو منطقتك على الواتساب على رقم 056 211 1334، "
+                "أو تشيك موقع fabrico.ae لمزيد من التفاصيل."
             )
 
-        # Prices
-        if any(p in t for p in ["سعر", "الاسعار", "الأسعار", "كم", "بكم", "تكلفة", "قائمة الاسعار"]):
+        # Prices & offers (Arabic)
+        if any(w in text for w in ["سعر", "الاسعار", "الأسعار", "كم", "بكم", "تكلفة", "كم سعر", "قائمة الاسعار"]):
             prices = get_prices_from_site()
+
             if prices:
-                user_words = [w for w in t.split() if len(w) > 2]
-                matched = []
+                # Try to match user words to price keys
+                user_words = [w for w in text.split() if len(w) > 2]
+                matched_items = []
+
                 for name_key, val in prices.items():
                     for uw in user_words:
                         if uw in name_key:
-                            matched.append((name_key, val))
+                            matched_items.append((name_key, val))
                             break
 
                 lines = []
-                if matched:
+
+                if matched_items:
                     lines.append("هذه بعض الأسعار التي وجدتها:\n")
-                    for name_key, val in matched[:12]:
+                    for name_key, val in matched_items[:12]:
                         lines.append(f"- {name_key.capitalize()}: {val}")
                 else:
-                    lines.append("ما قدرت أجد سعر واضح للقطعة المطلوبة.\n")
-                    lines.append("لكن هذه أمثلة من قائمة الأسعار:\n")
+                    lines.append(f"ما قدرت أجد سعر واضح للقطعة: {original_text.strip()}.\n")
+                    lines.append("لكن هذه أمثلة على بعض الأسعار في القائمة:\n")
                     count = 0
                     for name_key, val in prices.items():
                         lines.append(f"- {name_key.capitalize()}: {val}")
@@ -342,206 +348,143 @@ def faq_answer(text: str, lang: str):
                         if count >= 8:
                             break
 
-                lines.append("\nللقائمة الكاملة والمحدّثة يفضل زيارة صفحة الأسعار في الموقع.")
-                lines.append("وتذكّر: على أول 3 طلبات في الشهر يوجد خصم 20% (حسب توفر العرض).")
+                lines.append("\nللقائمة الكاملة والمحدّثة، يفضل زيارة صفحة الأسعار في الموقع.")
+                lines.append(
+                    "وتذكّر: على أول 3 طلبات في الشهر يوجد خصم 20% (حسب توفر العرض)."
+                )
                 return "\n".join(lines)
 
+            # Fallback if API failed
             return (
-                "ما قدرت أجيب الأسعار الآن.\n"
+                "ما قدرت أجيب الأسعار مباشرة الآن.\n"
                 "يُفضل تشيك صفحة الأسعار في الموقع لأحدث قائمة.\n"
-                "غالباً أسعارنا مناسبة ومع خصم 20% لأول 3 طلبات في الشهر (حسب توفر العرض)."
+                "عادةً أسعارنا مناسبة جداً، وعلى أول 3 طلبات في الشهر تحصل على خصم 20% "
+                "(حسب توفر العرض)."
             )
 
         # Pickup / booking
-        if any(p in t for p in ["استلام", "توصيل", "تحجز", "حجز", "طلب", "أطلب", "اطلب"]):
+        if any(w in text for w in ["استلام", "توصيل", "تستلمون", "تستلمو", "تجيبون", "تحجز", "حجز", "طلب"]):
             return (
                 "نعم، عندنا استلام وتوصيل مجاني في المناطق المشمولة.\n"
-                "تقدر تسوي طلب غسيل سريع عبر موقع fabrico.ae بالضغط على Quick Order أو Schedule Now.\n"
-                "بعد إنشاء الطلب مندوب فريش تاتش يتواصل معك قبل وقت الاستلام للتأكيد.\n"
+                "تقدر تسوي طلب غسيل سريع من خلال موقع fabrico.ae بالضغط على "
+                "Quick Order أو Schedule Now.\n"
+                "بعد إنشاء الطلب، مندوب فريش تاتش يتواصل معك قبل وقت الاستلام للتأكيد.\n"
                 "وعندك خصم 20% على أول 3 طلبات في الشهر (حسب توفر العرض)."
             )
 
         # Working hours
-        if any(p in t for p in ["الوقت", "الدوام", "متى تفتحون", "متى تسكرون", "مواعيد العمل"]):
+        if any(w in text for w in ["الوقت", "الدوام", "متى تفتحون", "متى تفتح", "متى تسكرون", "مواعيد العمل"]):
             return (
                 "نعمل في أوقات مريحة من الصباح إلى المساء.\n"
-                "للتأكد من مواعيد اليوم بالضبط، يفضل تشيك موقع fabrico.ae أو التواصل معنا على الواتساب."
+                "للتأكد من مواعيد اليوم بالتحديد، يُفضل تشيك موقع fabrico.ae أو التواصل معنا على الواتساب."
             )
 
-        # Location
-        if any(p in t for p in ["موقعكم", "وينكم", "وين موقعكم", "فرع", "المغسلة فين"]):
+        # Location (general)
+        if any(w in text for w in ["موقعكم", "وينكم", "وين موقعكم", "فرع", "المغسلة فين"]):
             return (
-                "نحن في دولة الإمارات ونقدم خدمة الاستلام والتوصيل في مناطق محددة.\n"
+                "نحن في دولة الإمارات ونوفر خدمة الاستلام والتوصيل في مناطق محددة.\n"
                 "تقدر تشيك موقع fabrico.ae أو تراسلنا على الواتساب للتأكد إذا نغطي منطقتك."
             )
 
-        return None
+        return None  # no Arabic FAQ hit → fall through
 
-    # ========== English branch ==========
+    # ---------------- ENGLISH ANSWERS ----------------
 
-    # ✅ VIEW ORDER / TRACK ORDER
-    if any(
-        p in t
-        for p in [
-            "view my order",
-            "see my order",
-            "view order",
-            "see order",
-            "my orders",
-            "order history",
-            "track my order",
-            "track order",
-            "order status",
-        ]
-    ):
-        return (
-            "To view and track your order:\n\n"
-            "1. Go to fabrico.ae\n"
-            "2. Tap 'Login with OTP'\n"
-            "3. Enter your mobile number and the 6-digit OTP you receive by SMS\n"
-            "4. Once logged in, open the 'My Orders' section\n"
-            "5. Select the order you want to see\n\n"
-            "There you can view:\n"
-            "- The full status timeline\n"
-            "- Pickup and delivery details\n"
-            "- Payment status (paid / unpaid)\n"
-            "- The bill and garment details.\n"
-        )
-
-    # ✅ PAYMENT / HOW TO PAY
-    if any(
-        p in t
-        for p in [
-            "how to pay",
-            "pay my order",
-            "make payment",
-            "payment",
-            "pay now",
-            "pay bill",
-            "pay invoice",
-            "settle bill",
-            "settle my bill",
-        ]
-    ):
-        return (
-            "To pay for your laundry order online:\n\n"
-            "1. Go to fabrico.ae\n"
-            "2. Log in using 'Login with OTP' (mobile number + 6-digit OTP)\n"
-            "3. Open the 'My Orders' section\n"
-            "4. Select the order that has an outstanding amount\n"
-            "5. Tap the 'Pay' button\n"
-            "6. Choose your payment method:\n"
-            "   - Card (debit / credit)\n"
-            "   - Apple Pay\n"
-            "   - Google Pay\n"
-            "7. After payment, you will see confirmation and can download your receipt.\n\n"
-            "If you face any issue with payment, you can also WhatsApp us on 056 211 1334. 😊"
-        )
-
-    # ✅ OTP LOGIN / ACCOUNT / TRACK (generic)
-    if any(
-        p in t
-        for p in [
-            "login",
-            "log in",
-            "login with otp",
-            "otp login",
-            "how to login",
-            "how to log in",
-            "sign in",
-            "sign-in",
-            "my account",
-            "account",
-        ]
-    ):
-        return (
-            "It's very simple to log in using OTP on Fresh Touch Laundry:\n\n"
-            "1. Go to fabrico.ae\n"
-            "2. Tap 'Login with OTP'\n"
-            "3. Enter your mobile number\n"
-            "4. You will receive a 6-digit OTP by SMS\n"
-            "5. Enter the OTP to log in instantly\n\n"
-            "Once logged in, you can:\n"
-            "- View all your orders\n"
-            "- Track order progress step-by-step\n"
-            "- Check payment status\n"
-            "- Pay using card, Apple Pay or Google Pay\n"
-            "- Download your receipts\n\n"
-            "No password is needed — just quick OTP login. 😊"
-        )
-
-    # Services
-    if any(p in t for p in ["services do you offer", "what services", "what do you offer"]):
+    # "What services do you offer?"
+    if any(w in text for w in ["services do you offer", "what services", "what do you offer"]):
         return (
             "We handle everyday laundry, dry cleaning, ironing, abayas, kanduras, dresses, suits, "
             "children’s clothes, curtains, carpets, duvets, blankets, towels, bedsheets and more.\n"
             "You can place a Quick Order on fabrico.ae and our rider will contact you before pickup."
         )
 
-    # Offers / discounts
-    if any(p in t for p in ["offer", "offers", "discount", "promo", "promotion", "deal"]):
+    # What makes you different / special
+    if any(w in text for w in ["what makes you different", "why are you different", "why choose you",
+                               "what is special", "what's special", "why fresh touch"]):
         return (
-            "We currently offer 20% off on the first 3 orders in a month (subject to current offer).\n"
-            "The discount applies on your laundry bill when you pay – by card, Apple Pay or Google Pay."
+            "Fresh Touch Laundry focuses on quality and comfort:\n"
+            "- Special Arabic bakhoor steam finishing for selected garments\n"
+            "- Premium sandalwood wash, and rose or jasmine wash for gentle fragrance\n"
+            "- Careful fabric handling with gentle detergents\n"
+            "- Free pickup and drop in covered areas\n"
+            "- 20% off on the first 3 orders in a month (subject to offer)\n"
+            "Plus, you can place quick orders online at fabrico.ae."
         )
 
-    # WhatsApp / contact
-    if any(
-        p in t
-        for p in [
-            "whatsapp",
-            "whats app",
-            "what'sapp",
-            "whatsap",
-            "contact number",
-            "phone number",
-            "mobile number",
-            "call you",
-            "call u",
-            "your number",
-        ]
-    ):
-        return "You can WhatsApp or call us on:\n📞 056 211 1334"
+    # Offers / discounts in English
+    if any(w in text for w in ["offer", "offers", "discount", "promo", "promotion", "deal"]):
+        return (
+            "We currently offer 20% off on the first 3 orders in a month (subject to current offer).\n"
+            "The discount applies on your laundry bill when you pay – by card, Apple Pay or Google Pay.\n"
+            "For any extra or seasonal promotions, please check fabrico.ae or contact us on WhatsApp."
+        )
 
-    # Area coverage / service in my area
-    if any(
-        p in t
-        for p in [
-            "service in my area",
-            "serve my area",
-            "do you service in my area",
-            "in my area",
-            "my area",
-            "my location",
-            "from my location",
-        ]
-    ):
+    # WhatsApp / contact number (English)
+    if any(w in text for w in [
+        "whatsapp", "what'sapp", "whats app", "whatsap", "contact number",
+        "phone number", "mobile number", "call you", "call u", "your number"
+    ]):
+        return (
+            "You can WhatsApp or call us on:\n"
+            "📞 056 211 1334"
+        )
+
+    # Area coverage / service in my area (English)
+    if any(w in text for w in [
+        "service in my area", "serve my area", "do you service in my area",
+        "in my area", "my area", "my location", "from my location"
+    ]):
         return (
             "We provide pickup & delivery in selected areas within the UAE.\n"
             "To confirm for your exact location, please share your area or live location on WhatsApp "
-            "to 056 211 1334, or check details on fabrico.ae."
+            "to 056 211 1334, or check the details on fabrico.ae."
         )
 
-    # Prices
-    if any(p in t for p in ["price", "prices", "cost", "how much", "rate", "list"]):
+    # Fragrance / bakhoor / sandalwood / rose / jasmine questions
+    if any(w in text for w in ["bakhoor", "bukhoor", "sandalwood", "sandlwood", "rose wash",
+                               "jasmine wash", "fragrance", "smell", "perfume wash"]):
+        return (
+            "We provide special fragrance options on selected items:\n"
+            "- Arabic bakhoor steam finishing\n"
+            "- Premium sandalwood wash\n"
+            "- Rose and jasmine wash for a soft, fresh scent\n"
+            "You can ask for these preferences when placing your order so we treat your garments accordingly."
+        )
+
+    # Prices & offers (English)
+    price_words = ["price", "prices", "cost", "how much", "rate", "list"]
+    has_price_word = any(w in text for w in price_words)
+    has_item_word = any(item in text for item in common_items)
+
+    # If user typed just 1–2 words (like "apron", "cap", "lungi")
+    # and it's not already handled as something else, treat it as a price query.
+    if not has_price_word and not has_item_word and len(text.split()) <= 2:
+        has_price_word = True
+
+    if has_price_word or (has_item_word and len(text.split()) <= 4):
         prices = get_prices_from_site()
+
         if prices:
-            user_words = [w for w in t.split() if len(w) > 2]
-            matched = []
+            # Try to match user words to actual price keys
+            user_words = [w for w in text.split() if len(w) > 2]
+            matched_items = []
+
             for name_key, val in prices.items():
                 for uw in user_words:
                     if uw in name_key:
-                        matched.append((name_key, val))
+                        matched_items.append((name_key, val))
                         break
 
             lines = []
-            if matched:
+
+            if matched_items:
                 lines.append("Here are the prices I found:\n")
-                for name_key, val in matched[:12]:
+                for name_key, val in matched_items[:12]:
                     lines.append(f"- {name_key.capitalize()}: {val}")
             else:
                 lines.append(
-                    "I couldn't find an exact price match for that item.\nHere are some example prices:\n"
+                    f"I couldn't find an exact price match for '{original_text.strip()}'.\n"
+                    "Here are some example laundry & dry cleaning prices:\n"
                 )
                 count = 0
                 for name_key, val in prices.items():
@@ -554,10 +497,12 @@ def faq_answer(text: str, lang: str):
                 "\nFor the full updated price list, please check the pricing page on the website."
             )
             lines.append(
-                "And remember: on the first 3 orders in a month, we offer 20% off (subject to current offer)."
+                "And remember: on the first 3 orders in a month, we offer 20% off "
+                "(subject to current offer)."
             )
             return "\n".join(lines)
 
+        # Fallback if API failed
         return (
             "I couldn't fetch the live prices right now.\n"
             "Please check the pricing page on the website for the latest detailed price list.\n"
@@ -565,8 +510,8 @@ def faq_answer(text: str, lang: str):
             "we give 20% off (subject to current offer)."
         )
 
-    # Pickup / booking
-    if any(p in t for p in ["pickup", "pick up", "delivery", "drop", "collect", "book", "order"]):
+    # Pickup, delivery & booking / Quick Order
+    if any(w in text for w in ["pickup", "pick up", "delivery", "drop", "collect", "book", "order"]):
         return (
             "Yes, we provide free pickup and drop in our covered areas.\n"
             "You can create a quick laundry order by visiting fabrico.ae and tapping on "
@@ -577,44 +522,188 @@ def faq_answer(text: str, lang: str):
         )
 
     # Working hours
-    if any(p in t for p in ["timing", "time", "open", "close", "working hours"]):
+    if any(w in text for w in ["timing", "time", "open", "close", "working hours"]):
         return (
             "We operate with convenient timings from morning till evening.\n"
             "For today's exact opening hours, please check fabrico.ae or contact us on WhatsApp."
         )
 
-    # Location
-    if any(p in t for p in ["where are you", "location", "branch", "shop"]):
+    # Location (general)
+    if any(w in text for w in ["where are you", "location", "branch", "shop"]):
         return (
             "We are based in the UAE and provide pickup & delivery service in our covered areas.\n"
             "Please check fabrico.ae or contact us on WhatsApp to confirm coverage for your area."
         )
 
-    return None
+    return None  # no FAQ hit
 
 
-def answer(user_text: str) -> str:
-    """Main entrypoint: decide language, small talk, FAQ, or fallback."""
-    lang = detect_language(user_text)
+# ---------------- MODEL WRAPPERS ----------------
 
-    small = handle_small_talk_and_meta(user_text, lang)
-    if small:
-        return small
+def load_model():
+    print("Loading model... This may take some time on first run...")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+    model = AutoModelForCausalLM.from_pretrained(MODEL_NAME)
+    model.eval()
 
-    faq = faq_answer(user_text, lang)
-    if faq:
-        return faq
+    print("✅ Model loaded. Fresh Touch Laundry bot (Jabir) is ready!\n")
+    return tokenizer, model
 
-    # Fallback if nothing matched
+
+def generate_reply(tokenizer, model, history_text: str, user_text: str, lang: str):
+    """
+    history_text: string with previous conversation
+    user_text: latest user message
+    lang: 'en' or 'ar'
+    returns: (new_history_text, bot_reply)
+
+    Strategy:
+    - Truncate history by characters.
+    - Tokenize with truncation to 896 tokens (reserve space for reply).
+    - Use ONLY max_new_tokens (no max_length) so we stay below 1024
+      and avoid HuggingFace warnings/errors.
+    """
+
     if lang == "ar":
-        return (
-            "أعتذر، يمكن سؤالك عام شوي أو خارج نطاق المعلومات اللي عندي.\n"
-            "أنا مساعد متخصص في الغسيل، الأسعار، العروض وخدمة الاستلام والتوصيل.\n"
-            "حاول تسألني عن شيء بخصوص الغسيل أو الأسعار أو الطلبات وسأحاول أساعدك بأفضل شكل. 🌸"
+        lang_instruction = (
+            "IMPORTANT: The user is writing in Arabic. "
+            "Answer ONLY in Arabic, with a friendly and clear tone. "
+            "Keep the answer short and easy to read."
         )
     else:
-        return (
-            "I’m mainly trained to help with laundry topics – prices, pickup, offers, "
-            "and how to place an order or pay for your order on fabrico.ae.\n"
-            "Please ask me about your laundry, items, prices, orders or pickup and I’ll do my best to help. 😊"
+        lang_instruction = (
+            "IMPORTANT: The user is writing in English. "
+            "Answer ONLY in English, with a friendly and clear tone. "
+            "Keep the answer short and easy to read."
         )
+
+    # 🔹 1) Soft truncate history by characters (keep only latest ~2000 chars)
+    MAX_HISTORY_CHARS = 2000
+    if len(history_text) > MAX_HISTORY_CHARS:
+        history_text_trimmed = history_text[-MAX_HISTORY_CHARS:]
+    else:
+        history_text_trimmed = history_text
+
+    # Build a prompt in dialogue style
+    prompt = (
+        BUSINESS_CONTEXT.strip()
+        + "\n\n"
+        + lang_instruction
+        + "\n\n"
+        + history_text_trimmed.strip()
+        + f"\nUser: {user_text}\nJabir:"
+    ).strip()
+
+    # 🔹 2) Tokenize with truncation for the input
+    # We limit to 896 so we always have room for up to ~128 new tokens
+    encoded = tokenizer(
+        prompt,
+        return_tensors="pt",
+        truncation=True,
+        max_length=896,
+    )
+
+    input_len = encoded["input_ids"].shape[1]
+    MAX_TOTAL_TOKENS = 1024
+
+    # How many tokens can we safely generate?
+    max_possible_new = MAX_TOTAL_TOKENS - input_len
+    # Try to generate up to 128, but cap at what's possible and ensure >= 16
+    available_for_gen = min(128, max_possible_new)
+    if available_for_gen < 16:
+        available_for_gen = max(1, max_possible_new)
+
+    output_ids = model.generate(
+        **encoded,
+        max_new_tokens=available_for_gen,
+        pad_token_id=tokenizer.eos_token_id,
+        do_sample=True,
+        top_p=0.95,
+        top_k=50,
+        temperature=0.7,
+    )
+
+    full_text = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+
+    # Extract only what Jabir said after the last "Jabir:" tag
+    last_tag = full_text.rfind("Jabir:")
+    if last_tag != -1:
+        bot_reply = full_text[last_tag + len("Jabir:"):].strip()
+    else:
+        # fallback: take the tail of the text
+        bot_reply = full_text[len(prompt):].strip()
+
+    # If model gives nothing or garbage → graceful, context-aware fallback
+    if not bot_reply or len(bot_reply) < 2:
+        if lang == "ar":
+            bot_reply = (
+                "يمكن ما فهمت سؤالك بالضبط، آسف على ذلك.\n"
+                "أنا متخصص في مساعدةك في أمور الغسيل، الأسعار، العروض وخدمة الاستلام والتوصيل.\n"
+                "حاول تكتب سؤالك مرة ثانية عن شيء يخص الغسيل أو الأسعار وأنا أجاوبك بأوضح شكل ممكن. 🌸"
+            )
+        else:
+            bot_reply = (
+                "I might not have understood your question correctly, sorry about that.\n"
+                "I’m mainly here to help with laundry questions – like prices, pickup, offers, "
+                "or how to place an order on fabrico.ae.\n"
+                "Please ask again about anything related to your laundry and I’ll do my best to answer clearly. 😊"
+            )
+
+    # We still store full history (text may get trimmed next time again)
+    new_history = (history_text + f"\nUser: {user_text}\nJabir: {bot_reply}").strip()
+    return new_history, bot_reply
+
+
+# ---------------- MAIN CHAT LOOP ----------------
+
+def main():
+    tokenizer, model = load_model()
+
+    # history as plain text (for multiple turns)
+    history_text = ""
+
+    print("Type your questions about laundry, prices, pickup, offers, fragrances, etc.")
+    print("اكتب أسئلتك عن الغسيل، الأسعار، الاستلام والتوصيل، والروائح الخاصة.\n")
+    print("Type 'exit' to quit.\n")
+
+    while True:
+        try:
+            user_text = input("You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nBot: Goodbye! 👋")
+            break
+
+        if user_text.lower() in {"exit", "quit", "bye"}:
+            print("Bot: Goodbye! 👋")
+            break
+
+        if not user_text:
+            continue
+
+        # Detect language
+        lang = detect_language(user_text)
+
+        # 0) Small talk / meta (name, hi, who are you, thanks, compliments)
+        small = handle_small_talk_and_meta(user_text, lang)
+        if small is not None:
+            print("Bot:", small)
+            history_text = (history_text + f"\nUser: {user_text}\nJabir: {small}").strip()
+            print()
+            continue
+
+        # 1) Try FAQ / business logic first
+        faq = faq_answer(user_text, lang)
+        if faq is not None:
+            print("Bot:", faq)
+            history_text = (history_text + f"\nUser: {user_text}\nJabir: {faq}").strip()
+            print()
+            continue
+
+        # 2) Otherwise, use the model (with language hint)
+        history_text, bot_reply = generate_reply(tokenizer, model, history_text, user_text, lang)
+        print("Bot:", bot_reply)
+        print()
+
+
+if __name__ == "__main__":
+    main()

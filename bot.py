@@ -172,6 +172,30 @@ def detect_variant_hint(text: str, lang: str):
     return None
 
 
+# Generic words that shouldn't be used to match an item by name — without
+# this, a query like "price for abaya dry clean" would treat "for" as a
+# search term, and since "for" is a literal substring of "uniform", it was
+# matching every uniform-related item too (Officer-Uniform-Cap,
+# School-uniform, Police Uniform), alongside the real Abaya match. Same
+# substring-matching approach as before (kept simple on purpose — this is a
+# keyword bot, not an NLP one), just no longer matching on filler words.
+_PRICE_QUERY_STOPWORDS_EN = {
+    "what", "is", "are", "the", "for", "and", "do", "you", "have", "has",
+    "price", "prices", "cost", "how", "much", "rate", "list", "of", "in",
+    "on", "my", "me", "to", "can", "please", "want", "need", "give", "tell",
+    "know", "about", "this", "that", "with", "your", "our", "would", "like",
+}
+_PRICE_QUERY_STOPWORDS_AR = {
+    "سعر", "الاسعار", "الأسعار", "كم", "بكم", "تكلفة", "قائمة", "من", "عن",
+    "هذا", "هذه", "لي", "انا", "أنا", "و", "او", "أو", "في", "على",
+}
+
+
+def _price_query_words(text: str, lang: str):
+    stopwords = _PRICE_QUERY_STOPWORDS_AR if lang == "ar" else _PRICE_QUERY_STOPWORDS_EN
+    return [w for w in text.split() if len(w) > 2 and w not in stopwords]
+
+
 def format_price_entry(entry, only_variant=None, lang="en"):
     """
     entry: one value from get_prices_from_site(), e.g.
@@ -451,7 +475,7 @@ def faq_answer(user_text: str, lang: str):
 
             if prices:
                 # Try to match user words to price keys
-                user_words = [w for w in text.split() if len(w) > 2]
+                user_words = _price_query_words(text, lang)
                 matched_items = []
 
                 for name_key, entry in prices.items():
@@ -656,7 +680,7 @@ def faq_answer(user_text: str, lang: str):
 
         if prices:
             # Try to match user words to actual price keys
-            user_words = [w for w in text.split() if len(w) > 2]
+            user_words = _price_query_words(text, lang)
             matched_items = []
 
             for name_key, entry in prices.items():

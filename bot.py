@@ -64,10 +64,21 @@ def get_prices_from_site():
     """
     Calls https://doobi.ae/packages (JSON) and normalizes into dict:
     {
-      "kandoora": "from 7 AED | Dry Clean: 10 aed, Steam: 5 aed, Wash and press: 8 aed",
-      "abaya":   "from 15 AED | Dry Clean: 15 aed, Steam: 8 aed, Wash and press: 12 aed",
+      "kandoora": {
+        "display_name": "Kandoora",
+        "base": 7,
+        "variants": [("Dry Clean", "10 aed"), ("Steam", "3 aed"),
+                     ("Wash & Steam", "7 aed"), ("Wash", "3 aed")],
+      },
       ...
     }
+    Returns structured data (not a pre-joined string) so the caller can
+    format it however a given reply needs — e.g. picking out just one
+    variant when the user asked for a specific service type (see
+    format_price_entry() below). Kept as a list of (name, price) tuples for
+    variants rather than a dict: order from the API is meaningful (checked
+    against the live API — every item lists Dry Clean, Steam, Wash & Steam,
+    Wash in that order) and the API doesn't guarantee unique variant names.
     """
 
     try:
@@ -99,30 +110,114 @@ def get_prices_from_site():
         base_price = pkg.get("price")  # numeric base price
         itemtype_list = pkg.get("itemtype", [])
 
-        # Build variants like: "Dry Clean: 10 aed, Steam: 5 aed, Wash and press: 8 aed"
         variants = []
         if isinstance(itemtype_list, list):
             for variant in itemtype_list:
                 if isinstance(variant, dict):
                     for vname, vprice in variant.items():
-                        variants.append(f"{vname}: {vprice}")
+                        variants.append((str(vname), str(vprice)))
 
-        parts = []
-
-        if base_price is not None:
-            parts.append(f"from {base_price} AED")
-
-        if variants:
-            parts.append(", ".join(variants))
-
-        if not parts:
+        if base_price is None and not variants:
             continue
 
-        prices[key] = " | ".join(parts)
+        prices[key] = {
+            "display_name": name,
+            "base": base_price,
+            "variants": variants,
+        }
 
     if not prices:
         print("⚠️ No prices found after parsing.")
     return prices or None
+
+
+# ---------------- PRICE FORMATTING ----------------
+# Split out from the response-building code below so the same readable
+# layout is used everywhere a price gets shown, in both languages, instead
+# of each call site building its own ad-hoc string.
+
+def _normalize_variant_text(s: str) -> str:
+    return s.lower().replace("&", "and").replace("  ", " ").strip()
+
+
+# Maps a phrase the user might type to the normalized form of a real variant
+# name from the API ("Dry Clean", "Steam", "Wash & Steam", "Wash" — checked
+# against the live API response). Longer/more specific phrases are checked
+# first so "wash and steam" / "wash & steam" isn't mistaken for plain "wash".
+_VARIANT_HINTS_EN = [
+    ("dry clean", "dry clean"),
+    ("wash and steam", "wash and steam"),
+    ("wash & steam", "wash and steam"),
+    ("steam", "steam"),
+    ("wash", "wash"),
+]
+_VARIANT_HINTS_AR = [
+    ("تنظيف جاف", "dry clean"),
+    ("غسيل وبخار", "wash and steam"),
+    ("بخار", "steam"),
+    ("غسيل", "wash"),
+]
+
+
+def detect_variant_hint(text: str, lang: str):
+    """Returns an English-normalized variant hint ("dry clean", "steam",
+    "wash and steam" or "wash") if the user's message names a specific
+    service type, else None. Always returns the English form (matching the
+    API's own variant names) regardless of the input language, since
+    format_price_entry() compares against those English names either way."""
+    hints = _VARIANT_HINTS_AR if lang == "ar" else _VARIANT_HINTS_EN
+    for phrase, hint in hints:
+        if phrase in text:
+            return hint
+    return None
+
+
+def format_price_entry(entry, only_variant=None, lang="en"):
+    """
+    entry: one value from get_prices_from_site(), e.g.
+    {"display_name": "Abaya", "base": 13, "variants": [("Dry Clean","15 aed"),...]}
+
+    When only_variant matches one of this item's real variants (checked
+    exact-match first, then substring, both normalized so "&" and "and"
+    compare equal), only that variant is shown — this is what makes
+    "price for abaya dry clean" answer with just the Dry Clean price
+    instead of dumping every option. Otherwise every variant is listed,
+    one per line, instead of the old single comma/pipe-packed line.
+    """
+    name = entry.get("display_name") or "Item"
+    lines = [f"🧺 {name}"]
+    variants = entry.get("variants") or []
+
+    matched = None
+    if only_variant:
+        target = _normalize_variant_text(only_variant)
+        for vname, vprice in variants:
+            if _normalize_variant_text(vname) == target:
+                matched = (vname, vprice)
+                break
+        if not matched:
+            for vname, vprice in variants:
+                if target in _normalize_variant_text(vname):
+                    matched = (vname, vprice)
+                    break
+
+    if matched:
+        lines.append(f"   • {matched[0]}: {matched[1]}")
+        others = len(variants) - 1
+        if others > 0:
+            if lang == "ar":
+                lines.append(f"   (+{others} خيارات أخرى متاحة لهذا الصنف)")
+            else:
+                plural = "s" if others != 1 else ""
+                lines.append(f"   (+{others} more option{plural} available for this item)")
+        return "\n".join(lines)
+
+    if entry.get("base") is not None:
+        label = "يبدأ من" if lang == "ar" else "Starting from"
+        lines.append(f"   {label}: {entry['base']} AED")
+    for vname, vprice in variants:
+        lines.append(f"   • {vname}: {vprice}")
+    return "\n".join(lines)
 
 
 # ---------------- SMALL TALK / META INTENT ----------------
@@ -305,6 +400,43 @@ def faq_answer(user_text: str, lang: str):
                 "📞 056 211 1334"
             )
 
+        # Payment methods (Arabic)
+        if any(w in text for w in ["طريقة الدفع", "كيف ادفع", "كيف أدفع", "بطاقة ائتمان", "ابل باي", "جوجل باي", "الدفع نقدا", "الدفع كاش"]):
+            return (
+                "تقدر تدفع بالبطاقة أو Apple Pay أو Google Pay عند إنشاء طلبك أونلاين.\n"
+                "لأي استفسار آخر عن الدفع، تواصل معنا على الواتساب: 📞 056 211 1334."
+            )
+
+        # Turnaround time (Arabic) — kept general, no confirmed exact timing to quote.
+        if any(w in text for w in ["كم يستغرق", "متى يجهز", "مدة الغسيل", "خدمة سريعة", "نفس اليوم"]):
+            return (
+                "مدة التجهيز تعتمد على نوع القطعة ونوع الخدمة المختارة.\n"
+                "تقدر تشوف الوقت التقريبي عند إنشاء الطلب في fabrico.ae، أو تسأل مباشرة على الواتساب: "
+                "📞 056 211 1334 لتأكيد الوقت بالضبط."
+            )
+
+        # Cancel / reschedule (Arabic)
+        if any(w in text for w in ["الغاء الطلب", "إلغاء الطلب", "تغيير موعد", "تغيير العنوان", "اعادة جدولة"]):
+            return (
+                "لإلغاء أو تعديل موعد أو تفاصيل طلب موجود، يرجى التواصل معنا على الواتساب وفريقنا يساعدك فوراً:\n"
+                "📞 056 211 1334"
+            )
+
+        # Order status / tracking (Arabic)
+        if any(w in text for w in ["تتبع طلبي", "وين طلبي", "حالة الطلب", "وين المندوب", "وصل المندوب"]):
+            return (
+                "تقدر تتابع حالة طلبك من خلال حسابك في fabrico.ae (My Bookings)، "
+                "أو تواصل معنا على الواتساب لتحديث مباشر:\n"
+                "📞 056 211 1334"
+            )
+
+        # Minimum order (Arabic)
+        if any(w in text for w in ["اقل طلب", "أقل طلب", "الحد الادنى", "الحد الأدنى للطلب"]):
+            return (
+                "لمعرفة الحد الأدنى للطلب، يرجى مراجعة fabrico.ae أو التواصل معنا على الواتساب: "
+                "📞 056 211 1334 وفريقنا يأكد لك الحد الأدنى في منطقتك."
+            )
+
         # Area coverage / service in my area (Arabic)
         if any(w in text for w in ["منطقتي", "منطقه", "في منطقتي", "في منطقتك", "تخدمون منطقتي", "تخدمون في منطقتي"]):
             return (
@@ -322,29 +454,37 @@ def faq_answer(user_text: str, lang: str):
                 user_words = [w for w in text.split() if len(w) > 2]
                 matched_items = []
 
-                for name_key, val in prices.items():
+                for name_key, entry in prices.items():
                     for uw in user_words:
                         if uw in name_key:
-                            matched_items.append((name_key, val))
+                            matched_items.append((name_key, entry))
                             break
 
+                variant_hint = detect_variant_hint(text, lang)
                 lines = []
 
                 if matched_items:
-                    lines.append("هذه بعض الأسعار التي وجدتها:\n")
-                    for name_key, val in matched_items[:12]:
-                        lines.append(f"- {name_key.capitalize()}: {val}")
+                    lines.append("هذه الأسعار التي وجدتها:")
+                    lines.append("")
+                    for name_key, entry in matched_items[:6]:
+                        lines.append(format_price_entry(entry, only_variant=variant_hint, lang=lang))
+                        lines.append("")
+                    lines.pop()  # drop the trailing blank line
                 else:
-                    lines.append(f"ما قدرت أجد سعر واضح للقطعة: {original_text.strip()}.\n")
-                    lines.append("لكن هذه أمثلة على بعض الأسعار في القائمة:\n")
+                    lines.append(f"ما قدرت أجد سعر واضح للقطعة: {original_text.strip()}.")
+                    lines.append("لكن هذه أمثلة على بعض الأسعار في القائمة:")
+                    lines.append("")
                     count = 0
-                    for name_key, val in prices.items():
-                        lines.append(f"- {name_key.capitalize()}: {val}")
+                    for name_key, entry in prices.items():
+                        lines.append(format_price_entry(entry, lang=lang))
+                        lines.append("")
                         count += 1
-                        if count >= 8:
+                        if count >= 5:
                             break
+                    lines.pop()
 
-                lines.append("\nللقائمة الكاملة والمحدّثة، يفضل زيارة صفحة الأسعار في الموقع.")
+                lines.append("")
+                lines.append("للقائمة الكاملة والمحدّثة، يفضل زيارة صفحة الأسعار في الموقع.")
                 lines.append(
                     "وتذكّر: على أول 3 طلبات في الشهر يوجد خصم 20% (حسب توفر العرض)."
                 )
@@ -425,6 +565,60 @@ def faq_answer(user_text: str, lang: str):
             "📞 056 211 1334"
         )
 
+    # Payment methods — reuses the same fact already stated in the offers
+    # reply above, just answered directly when that's the actual question.
+    if any(w in text for w in [
+        "payment method", "how can i pay", "how do i pay", "pay by card",
+        "credit card", "debit card", "apple pay", "google pay", "pay cash", "cash on delivery"
+    ]):
+        return (
+            "You can pay by card, Apple Pay or Google Pay when you place your order online.\n"
+            "For any other payment questions, feel free to reach us on WhatsApp: 📞 056 211 1334."
+        )
+
+    # Turnaround time — kept general on purpose: this bot doesn't have a
+    # confirmed per-item time commitment to quote, so it points to the real
+    # source instead of guessing a number.
+    if any(w in text for w in [
+        "how long", "how many hours", "how many days", "turnaround",
+        "same day", "express service", "how fast", "when will it be ready", "ready by"
+    ]):
+        return (
+            "Turnaround time depends on the item and the service type you choose.\n"
+            "You can see the estimated time for each item when you place your order on fabrico.ae, "
+            "or ask us directly on WhatsApp: 📞 056 211 1334 for an exact estimate."
+        )
+
+    # Cancel / reschedule an existing order — no confirmed self-serve policy
+    # in this bot, so route to a human rather than guess one.
+    if any(w in text for w in [
+        "cancel my order", "cancel order", "how to cancel", "reschedule",
+        "change my pickup", "change my order", "change my address"
+    ]):
+        return (
+            "To cancel, reschedule or change details on an existing order, please contact us on "
+            "WhatsApp and our team will help you right away:\n"
+            "📞 056 211 1334"
+        )
+
+    # Order status / tracking
+    if any(w in text for w in [
+        "track my order", "track order", "order status", "where is my order",
+        "where is my driver", "where is my rider", "is my order ready"
+    ]):
+        return (
+            "You can check your order status by logging into your account on fabrico.ae "
+            "(under My Bookings), or contact us on WhatsApp for a live update:\n"
+            "📞 056 211 1334"
+        )
+
+    # Minimum order value — no confirmed policy in this bot, route to a human.
+    if any(w in text for w in ["minimum order", "min order", "minimum amount", "smallest order"]):
+        return (
+            "For minimum order details, please check fabrico.ae or ask us on WhatsApp: "
+            "📞 056 211 1334 — our team will confirm the current minimum for your area."
+        )
+
     # Area coverage / service in my area (English)
     if any(w in text for w in [
         "service in my area", "serve my area", "do you service in my area",
@@ -465,32 +659,41 @@ def faq_answer(user_text: str, lang: str):
             user_words = [w for w in text.split() if len(w) > 2]
             matched_items = []
 
-            for name_key, val in prices.items():
+            for name_key, entry in prices.items():
                 for uw in user_words:
                     if uw in name_key:
-                        matched_items.append((name_key, val))
+                        matched_items.append((name_key, entry))
                         break
 
+            # e.g. "abaya dry clean" → shows just the Dry Clean price for
+            # Abaya instead of every service type for it (see
+            # format_price_entry() for exactly what this changes).
+            variant_hint = detect_variant_hint(text, lang)
             lines = []
 
             if matched_items:
-                lines.append("Here are the prices I found:\n")
-                for name_key, val in matched_items[:12]:
-                    lines.append(f"- {name_key.capitalize()}: {val}")
+                lines.append("Here are the prices I found:")
+                lines.append("")
+                for name_key, entry in matched_items[:6]:
+                    lines.append(format_price_entry(entry, only_variant=variant_hint, lang=lang))
+                    lines.append("")
+                lines.pop()  # drop the trailing blank line
             else:
-                lines.append(
-                    f"I couldn't find an exact price match for '{original_text.strip()}'.\n"
-                    "Here are some example laundry & dry cleaning prices:\n"
-                )
+                lines.append(f"I couldn't find an exact price match for '{original_text.strip()}'.")
+                lines.append("Here are some example laundry & dry cleaning prices:")
+                lines.append("")
                 count = 0
-                for name_key, val in prices.items():
-                    lines.append(f"- {name_key.capitalize()}: {val}")
+                for name_key, entry in prices.items():
+                    lines.append(format_price_entry(entry, lang=lang))
+                    lines.append("")
                     count += 1
-                    if count >= 8:
+                    if count >= 5:
                         break
+                lines.pop()
 
+            lines.append("")
             lines.append(
-                "\nFor the full updated price list, please check the pricing page on the website."
+                "For the full updated price list, please check the pricing page on the website."
             )
             lines.append(
                 "And remember: on the first 3 orders in a month, we offer 20% off "
@@ -532,6 +735,27 @@ def faq_answer(user_text: str, lang: str):
         )
 
     return None  # no FAQ hit
+
+
+# ---------------- ORDER INTENT (for the frontend's Quick Order CTA) ----------------
+# Kept separate from faq_answer() on purpose: faq_answer() returns a plain
+# string reply and is called from both this file's own CLI loop (main()) and
+# app.py's /jabir/chat endpoint — changing its return type to carry an extra
+# "action" flag would mean touching every one of its many return statements
+# and both call sites. This just re-checks the same pickup/booking keyword
+# sets faq_answer() already uses, independently, so app.py can decide whether
+# to also tell the frontend to show the Quick Order button — the frontend
+# widget then opens Fresh Touch's existing Quick Order flow (with its
+# required phone OTP), so this bot never creates or touches an order itself,
+# and can't be scripted into placing one.
+_ORDER_INTENT_WORDS_EN = ["pickup", "pick up", "delivery", "drop", "collect", "book", "order"]
+_ORDER_INTENT_WORDS_AR = ["استلام", "توصيل", "تستلمون", "تستلمو", "تجيبون", "تحجز", "حجز", "طلب"]
+
+
+def detect_order_action(user_text: str, lang: str) -> bool:
+    text = (user_text or "").lower().strip()
+    words = _ORDER_INTENT_WORDS_AR if lang == "ar" else _ORDER_INTENT_WORDS_EN
+    return any(w in text for w in words)
 
 
 # ---------------- FALLBACK REPLY ----------------

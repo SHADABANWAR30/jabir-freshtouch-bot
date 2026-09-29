@@ -665,6 +665,21 @@ def faq_answer(user_text: str, lang: str):
             "You can ask for these preferences when placing your order so we treat your garments accordingly."
         )
 
+    # Pickup, delivery & booking / Quick Order — checked before prices so a
+    # phrase like "book pickup" (no price/item word, <=2 words) doesn't get
+    # swallowed by the short-message-implies-price heuristic below and end
+    # up giving a mismatched "couldn't find that price" reply alongside the
+    # Quick Order CTA button.
+    if any(w in text for w in ["pickup", "pick up", "delivery", "drop", "collect", "book", "order"]):
+        return (
+            "Yes, we provide free pickup and drop in our covered areas.\n"
+            "You can create a quick laundry order by visiting fabrico.ae and tapping on "
+            "Quick Order / Schedule Now.\n"
+            "After you place the order, our rider will contact you before your pickup time "
+            "to reconfirm the details.\n"
+            "Also, for the first 3 orders in a month, you get 20% off (subject to current offer)."
+        )
+
     # Prices & offers (English)
     price_words = ["price", "prices", "cost", "how much", "rate", "list"]
     has_price_word = any(w in text for w in price_words)
@@ -733,17 +748,6 @@ def faq_answer(user_text: str, lang: str):
             "we give 20% off (subject to current offer)."
         )
 
-    # Pickup, delivery & booking / Quick Order
-    if any(w in text for w in ["pickup", "pick up", "delivery", "drop", "collect", "book", "order"]):
-        return (
-            "Yes, we provide free pickup and drop in our covered areas.\n"
-            "You can create a quick laundry order by visiting fabrico.ae and tapping on "
-            "Quick Order / Schedule Now.\n"
-            "After you place the order, our rider will contact you before your pickup time "
-            "to reconfirm the details.\n"
-            "Also, for the first 3 orders in a month, you get 20% off (subject to current offer)."
-        )
-
     # Working hours
     if any(w in text for w in ["timing", "time", "open", "close", "working hours"]):
         return (
@@ -775,10 +779,27 @@ def faq_answer(user_text: str, lang: str):
 _ORDER_INTENT_WORDS_EN = ["pickup", "pick up", "delivery", "drop", "collect", "book", "order"]
 _ORDER_INTENT_WORDS_AR = ["استلام", "توصيل", "تستلمون", "تستلمو", "تجيبون", "تحجز", "حجز", "طلب"]
 
+# The bare word "order" (and "طلب") also appears in tracking/cancel/minimum-
+# order questions like "where is my order" or "cancel my order" — those are
+# clearly NOT someone wanting to place a new order, so the CTA button
+# shouldn't show up on them even though faq_answer() correctly answers the
+# question itself. Checked first and short-circuits detect_order_action().
+_ORDER_INTENT_EXCLUDE_EN = [
+    "where is my", "track", "tracking", "status", "order ready", "cancel",
+    "reschedule", "change my", "minimum order", "min order",
+]
+_ORDER_INTENT_EXCLUDE_AR = [
+    "وين طلبي", "تتبع", "حالة الطلب", "وين المندوب", "وصل المندوب",
+    "الغاء", "إلغاء", "تغيير موعد", "اقل طلب", "أقل طلب", "الحد الادنى", "الحد الأدنى",
+]
+
 
 def detect_order_action(user_text: str, lang: str) -> bool:
     text = (user_text or "").lower().strip()
     words = _ORDER_INTENT_WORDS_AR if lang == "ar" else _ORDER_INTENT_WORDS_EN
+    excludes = _ORDER_INTENT_EXCLUDE_AR if lang == "ar" else _ORDER_INTENT_EXCLUDE_EN
+    if any(w in text for w in excludes):
+        return False
     return any(w in text for w in words)
 
 

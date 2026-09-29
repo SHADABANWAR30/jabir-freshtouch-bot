@@ -9,6 +9,7 @@ from bot import (
     handle_small_talk_and_meta,
     faq_answer,
     generate_reply,
+    detect_order_action,
 )
 
 app = FastAPI()
@@ -45,6 +46,10 @@ class ChatRequest(BaseModel):
 
 class ChatResponse(BaseModel):
     reply: str
+    # "open_quick_order" tells the frontend widget to surface the Quick Order
+    # CTA — see detect_order_action() in bot.py for why this is a separate,
+    # additive field rather than something baked into the reply text itself.
+    action: str | None = None
 
 
 @app.post("/jabir/chat", response_model=ChatResponse)
@@ -76,7 +81,11 @@ def chat(req: ChatRequest):
     if faq is not None:
         history_text = (history_text + f"\nUser: {user_text}\nJabir: {faq}").strip()
         histories[session_id] = history_text
-        return ChatResponse(reply=faq)
+        # Only the pickup/booking FAQ branch can set this — detect_order_action()
+        # checks the exact same keywords that branch does, so this never fires
+        # for an unrelated FAQ match (prices, offers, hours, etc.).
+        action = "open_quick_order" if detect_order_action(user_text, lang) else None
+        return ChatResponse(reply=faq, action=action)
 
     # 2) Fallback reply
     history_text, bot_reply = generate_reply(history_text, user_text, lang)
